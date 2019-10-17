@@ -74,8 +74,8 @@ There are multiple registered gym environments, each corresponding to a differen
 - `Duckietown-loop_obstacles-v0` (static obstacles in the road)
 - `Duckietown-loop_pedestrians-v0` (moving obstacles in the road)
 
-The `MultiMap-v0` environment is essentially a [wrapper](https://github.com/duckietown/gym-duckietown/blob/master/gym_duckietown/envs/multimap_env.py) for the simulator which
-will automatically cycle through all available [map files](https://github.com/duckietown/gym-duckietown/tree/master/gym_duckietown/maps). This makes it possible to train on
+The `MultiMap-v0` environment is essentially a [wrapper](https://github.com/51leonix/gym-duckietown/blob/master/gym_duckietown/envs/multimap_env.py) for the simulator which
+will automatically cycle through all available [map files](https://github.com/51leonix/gym-duckietown/tree/master/gym_duckietown/maps). This makes it possible to train on
 a variety of different maps at the same time, with the idea that training on a variety of
 different scenarios will make for a more robust policy/model.
 
@@ -111,7 +111,7 @@ Requirements:
 You can install all the dependencies except PyTorch with `pip3`:
 
 ```
-git clone https://github.com/duckietown/gym-duckietown.git
+git clone https://github.com/51leonix/gym-duckietown.git
 cd gym-duckietown
 pip3 install -e .
 ```
@@ -121,7 +121,7 @@ pip3 install -e .
 Alternatively, you can install all the dependencies, including PyTorch, using Conda as follows. For those trying to use this package on MILA machines, this is the way to go:
 
 ```
-git clone https://github.com/duckietown/gym-duckietown.git
+git clone https://github.com/51leonix/gym-duckietown.git
 cd gym-duckietown
 conda env create -f environment.yaml
 ```
