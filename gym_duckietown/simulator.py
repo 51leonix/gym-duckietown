@@ -46,7 +46,7 @@ WALL_COLOR = np.array([0.64, 0.71, 0.28])
 GROUND_COLOR = np.array([0.15, 0.15, 0.15])
 
 # Angle at which the camera is pitched downwards
-CAMERA_ANGLE = 20
+CAMERA_ANGLE = 3           #Original 20
 
 # Camera field of view angle in the Y direction
 # Note: robot uses Raspberri Pi camera module V1.3
@@ -94,7 +94,7 @@ DEFAULT_ROBOT_SPEED = 1.20
 
 DEFAULT_FRAMERATE = 30
 
-DEFAULT_MAX_STEPS = 1500
+DEFAULT_MAX_STEPS = 2500
 
 DEFAULT_MAP_NAME = 'udem1'
 
@@ -1033,6 +1033,351 @@ class Simulator(gym.Env):
         tangent = bezier_tangent(cps, t)
 
         return point, tangent
+    def get_left_turn(self, pos, angle):
+        """
+            Get the position of the agent relative to the left turn of the right lane
+
+            Raises NotInLane if the Duckiebot is not in a lane.
+        """
+
+        # Get the closest point along the right lane's Bezier curve,
+        # and the tangent at that point
+        point, tangent = self.closest_left_curve_point(pos, angle)
+        if point is None:
+            msg = 'Point not in lane: %s' % pos
+            raise NotInLane(msg)
+
+        assert point is not None
+
+        # Compute the alignment of the agent direction with the curve tangent
+        dirVec = get_dir_vec(angle)
+        dotDir = np.dot(dirVec, tangent)
+        dotDir = max(-1, min(1, dotDir))
+
+        # Compute the signed distance to the curve
+        # Right of the curve is negative, left is positive
+        posVec = pos - point
+        upVec = np.array([0, 1, 0])
+        rightVec = np.cross(tangent, upVec)
+        signedDist = np.dot(posVec, rightVec)
+
+        # Compute the signed angle between the direction and curve tangent
+        # Right of the tangent is negative, left is positive
+        angle_rad = math.acos(dotDir)
+
+        if np.dot(dirVec, rightVec) < 0:
+            angle_rad *= -1
+
+        angle_deg = np.rad2deg(angle_rad)
+        # return signedDist, dotDir, angle_deg
+
+        return LanePosition(dist=signedDist, dot_dir=dotDir, angle_deg=angle_deg,
+                            angle_rad=angle_rad)
+
+    def closest_left_curve_point(self, pos, angle=None):
+        """
+            Get the closest point on the curve to a given point
+            Also returns the tangent at that point.
+
+            Returns None, None if not in a lane.
+        """
+
+        i, j = self.get_grid_coords(pos)
+        tile = self._get_tile(i, j)
+
+        if tile is None or not tile['drivable']:
+            return None, None
+
+        # Find curve with largest dotproduct with heading
+        curves = self._get_curve_left(i, j)
+        curve_headings = curves[:, -1, :] - curves[:, 0, :]
+        curve_headings = curve_headings / np.linalg.norm(curve_headings).reshape(1, -1)
+        dir_vec = get_dir_vec(angle)
+
+        dot_prods = np.dot(curve_headings, dir_vec)
+
+        # Closest curve = one with largest dotprod
+        cps = curves[np.argmax(dot_prods)]
+
+        # Find closest point and tangent to this curve
+        t = bezier_closest(cps, pos)
+        point = bezier_point(cps, t)
+        tangent = bezier_tangent(cps, t)
+
+        return point, tangent
+
+
+    def _get_curve_left(self, i, j):
+        """
+            Get the Bezier curve control points for a given tile
+        """
+        tile = self._get_tile(i, j)
+        assert tile is not None
+
+        kind = tile['kind']
+        angle = tile['angle']
+
+        # Each tile will have a unique set of control points,
+        # Corresponding to each of its possible turns
+
+        # Hardcoded all curves for 3way intersection
+        if kind.startswith('3way'):
+            pts = np.array([
+                [
+                    [-0.20, 0, -0.50],
+                    [-0.20, 0, 0.00],
+                    [0.00, 0, 0.20],
+                    [0.50, 0, 0.20],
+                ],
+                [
+                    [0.50, 0, -0.20],
+                    [0.30, 0, -0.20],
+                    [-0.20, 0, 0.00],
+                    [-0.20, 0, 0.50],
+                ],
+            ]) * self.road_tile_size
+
+        # Template for each side of 4way intersection
+        elif kind.startswith('4way'):
+            pts = np.array([
+                [
+                    [-0.20, 0, -0.50],
+                    [-0.20, 0, 0.00],
+                    [0.00, 0, 0.20],
+                    [0.50, 0, 0.20],
+                ]
+            ]) * self.road_tile_size
+        else:
+            assert False, kind
+
+        # Rotate and align each curve with its place in global frame
+        if kind.startswith('4way'):
+            fourway_pts = []
+            # Generate all four sides' curves, 
+            # with 3-points template above
+            x,y,z = self.get_dir_vec(self.cur_angle)
+            x = round(x)
+            z = round(z)
+            print(x,z)
+            if (x == 0 and z == 1) or (x == 1 and z == 1):
+                rot = 0
+            #for rot in np.arange(0, 4):
+                mat = gen_rot_matrix(np.array([0, 1, 0]), rot * math.pi / 2)
+                pts_new = np.matmul(pts, mat)
+                pts_new += np.array([(i + 0.5) * self.road_tile_size, 0, (j + 0.5) * self.road_tile_size])
+                fourway_pts.append(pts_new)
+            elif (x == -1 and z == 0) or (x == -1 and z == 1):
+                rot = 3
+                mat = gen_rot_matrix(np.array([0, 1, 0]), rot * math.pi / 2)
+                pts_new = np.matmul(pts, mat)
+                pts_new += np.array([(i + 0.5) * self.road_tile_size, 0, (j + 0.5) * self.road_tile_size])
+                fourway_pts.append(pts_new)
+            elif (x == 0 and z == -1) or (x == -1 and z == -1):
+                rot = 2
+                mat = gen_rot_matrix(np.array([0, 1, 0]), rot * math.pi / 2)
+                pts_new = np.matmul(pts, mat)
+                pts_new += np.array([(i + 0.5) * self.road_tile_size, 0, (j + 0.5) * self.road_tile_size])
+                fourway_pts.append(pts_new)
+            elif (x == 1 and z == 0) or (x == 1 and z == -1):
+                rot = 1
+                mat = gen_rot_matrix(np.array([0, 1, 0]), rot * math.pi / 2)
+                pts_new = np.matmul(pts, mat)
+                pts_new += np.array([(i + 0.5) * self.road_tile_size, 0, (j + 0.5) * self.road_tile_size])
+                fourway_pts.append(pts_new)
+
+            fourway_pts = np.reshape(np.array(fourway_pts), (1, 4, 3)) #Primo indice a 12
+            return fourway_pts
+
+        # Hardcoded each curve; just rotate and shift
+        elif kind.startswith('3way'):
+            threeway_pts = []
+            mat = gen_rot_matrix(np.array([0, 1, 0]), angle * math.pi / 2)
+            pts_new = np.matmul(pts, mat)
+            pts_new += np.array([(i + 0.5) * self.road_tile_size, 0, (j + 0.5) * self.road_tile_size])
+            threeway_pts.append(pts_new)
+
+            threeway_pts = np.array(threeway_pts)
+            threeway_pts = np.reshape(threeway_pts, (2, 4, 3)) #Primo indice 6
+            return threeway_pts
+
+        else:
+            mat = gen_rot_matrix(np.array([0, 1, 0]), angle * math.pi / 2)
+            pts = np.matmul(pts, mat)
+            pts += np.array([(i + 0.5) * self.road_tile_size, 0, (j + 0.5) * self.road_tile_size])
+
+        return pts
+
+    def get_right_turn(self, pos, angle, direction = None):
+        """
+            Get the position of the agent relative to the right turn of the right lane
+
+            Raises NotInLane if the Duckiebot is not in a lane.
+        """
+
+        # Get the closest point along the right lane's Bezier curve,
+        # and the tangent at that point
+        point, tangent = self.closest_right_curve_point(pos, angle, direc = direction)
+        if point is None:
+            msg = 'Point not in lane: %s' % pos
+            raise NotInLane(msg)
+
+        assert point is not None
+
+        # Compute the alignment of the agent direction with the curve tangent
+        dirVec = get_dir_vec(angle)
+        dotDir = np.dot(dirVec, tangent)
+        dotDir = max(-1, min(1, dotDir))
+
+        # Compute the signed distance to the curve
+        # Right of the curve is negative, left is positive
+        posVec = pos - point
+        upVec = np.array([0, 1, 0])
+        rightVec = np.cross(tangent, upVec)
+        signedDist = np.dot(posVec, rightVec)
+
+        # Compute the signed angle between the direction and curve tangent
+        # Right of the tangent is negative, left is positive
+        angle_rad = math.acos(dotDir)
+
+        if np.dot(dirVec, rightVec) < 0:
+            angle_rad *= -1
+
+        angle_deg = np.rad2deg(angle_rad)
+        # return signedDist, dotDir, angle_deg
+
+        return LanePosition(dist=signedDist, dot_dir=dotDir, angle_deg=angle_deg,
+                            angle_rad=angle_rad)
+
+    def closest_right_curve_point(self, pos, angle=None, direc = None):
+        """
+            Get the closest point on the curve to a given point
+            Also returns the tangent at that point.
+
+            Returns None, None if not in a lane.
+        """
+
+        i, j = self.get_grid_coords(pos)
+        tile = self._get_tile(i, j)
+
+        if tile is None or not tile['drivable']:
+            return None, None
+
+        # Find curve with largest dotproduct with heading
+        curves = self._get_curve_right(i, j, direc)
+        curve_headings = curves[:, -1, :] - curves[:, 0, :]
+        curve_headings = curve_headings / np.linalg.norm(curve_headings).reshape(1, -1)
+        dir_vec = get_dir_vec(angle)
+
+        dot_prods = np.dot(curve_headings, dir_vec)
+
+        # Closest curve = one with largest dotprod
+        cps = curves[np.argmax(dot_prods)]
+
+        # Find closest point and tangent to this curve
+        t = bezier_closest(cps, pos)
+        point = bezier_point(cps, t)
+        tangent = bezier_tangent(cps, t)
+
+        return point, tangent
+
+
+    def _get_curve_right(self, i, j, direction=None):
+        """
+            Get the Bezier curve control points for a given tile
+        """
+        tile = self._get_tile(i, j)
+        assert tile is not None
+
+        kind = tile['kind']
+        angle = tile['angle']
+
+        # Each tile will have a unique set of control points,
+        # Corresponding to each of its possible turns
+
+        # Hardcoded all curves for 3way intersection
+        if kind.startswith('3way'):
+            pts = np.array([
+                [
+                    [0.50, 0, -0.20],
+                    [0.30, 0, -0.20],
+                    [0.20, 0, -0.30],                   #Terzo valore -0.20
+                    [0.20, 0, -0.50],
+                ],
+                [
+                    [0.20, 0, 0.50],
+                    [0.30, 0, 0.20],                    #Primo valore 0.20
+                    [0.30, 0, 0.20],
+                    [0.50, 0, 0.20],
+                ]
+            ]) * self.road_tile_size
+
+        # Template for each side of 4way intersection
+        elif kind.startswith('4way'):
+            pts = np.array([
+                [
+                    [-0.20, 0, -0.50],
+                    [-0.20, 0, -0.30],           #Terzo valore -0.20
+                    [-0.30, 0, -0.20],
+                    [-0.50, 0, -0.20],
+                ]
+            ]) * self.road_tile_size
+        else:
+            assert False, kind
+
+        # Rotate and align each curve with its place in global frame
+        if kind.startswith('4way'):
+            fourway_pts = []
+            # Generate all four sides' curves, 
+            # with 3-points template above
+            if direction == 'S':
+                rot = 0
+            #for rot in np.arange(0, 4):
+                mat = gen_rot_matrix(np.array([0, 1, 0]), rot * math.pi / 2)
+                pts_new = np.matmul(pts, mat)
+                pts_new += np.array([(i + 0.5) * self.road_tile_size, 0, (j + 0.5) * self.road_tile_size])
+                fourway_pts.append(pts_new)
+            elif direction == 'E':
+                rot = 1
+                mat = gen_rot_matrix(np.array([0, 1, 0]), rot * math.pi / 2)
+                pts_new = np.matmul(pts, mat)
+                pts_new += np.array([(i + 0.5) * self.road_tile_size, 0, (j + 0.5) * self.road_tile_size])
+                fourway_pts.append(pts_new)
+            elif direction == 'N':
+                rot = 2
+                mat = gen_rot_matrix(np.array([0, 1, 0]), rot * math.pi / 2)
+                pts_new = np.matmul(pts, mat)
+                pts_new += np.array([(i + 0.5) * self.road_tile_size, 0, (j + 0.5) * self.road_tile_size])
+                fourway_pts.append(pts_new)
+            elif direction == 'O':
+                rot = 3
+                mat = gen_rot_matrix(np.array([0, 1, 0]), rot * math.pi / 2)
+                pts_new = np.matmul(pts, mat)
+                pts_new += np.array([(i + 0.5) * self.road_tile_size, 0, (j + 0.5) * self.road_tile_size])
+                fourway_pts.append(pts_new)
+
+            fourway_pts = np.reshape(np.array(fourway_pts), (1, 4, 3))
+            return fourway_pts
+
+        # Hardcoded each curve; just rotate and shift
+        elif kind.startswith('3way'):
+            threeway_pts = []
+            mat = gen_rot_matrix(np.array([0, 1, 0]), angle * math.pi / 2)
+            pts_new = np.matmul(pts, mat)
+            pts_new += np.array([(i + 0.5) * self.road_tile_size, 0, (j + 0.5) * self.road_tile_size])
+            threeway_pts.append(pts_new)
+
+            threeway_pts = np.array(threeway_pts)
+            threeway_pts = np.reshape(threeway_pts, (2, 4, 3))
+            return threeway_pts
+
+        else:
+            mat = gen_rot_matrix(np.array([0, 1, 0]), angle * math.pi / 2)
+            pts = np.matmul(pts, mat)
+            pts += np.array([(i + 0.5) * self.road_tile_size, 0, (j + 0.5) * self.road_tile_size])
+
+        return pts
+
+
 
     def get_lane_pos2(self, pos, angle):
         """
@@ -1321,6 +1666,11 @@ class Simulator(gym.Env):
         except NotInLane:
             reward = 40 * col_penalty
         else:
+            if speed == 0:
+                reward = (+0.5 *  lp.dot_dir +
+                    -10 * np.abs(lp.dist) +
+                    +40 * col_penalty)
+                return reward
 
             # Compute the reward
             reward = (
